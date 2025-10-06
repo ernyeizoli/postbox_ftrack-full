@@ -1,0 +1,14 @@
+services:
+  postbox_ftrack:
+    build: .
+    container_name: postbox_ftrack
+    restart: unless-stopped
+    environment:
+      FTRACK_SERVER: ${FTRACK_SERVER}
+      FTRACK_API_USER: ${FTRACK_API_USER}
+      FTRACK_API_KEY: ${FTRACK_API_KEY}
+      UNDARK_FTRACK_API_URL: ${UNDARK_FTRACK_API_URL}
+      UNDARK_FTRACK_API_USER: ${UNDARK_FTRACK_API_USER}
+      UNDARK_FTRACK_API_KEY: ${UNDARK_FTRACK_API_KEY}
+    ports:
+      - "8000:8000"
