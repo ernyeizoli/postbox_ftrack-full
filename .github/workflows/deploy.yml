@@ -1,0 +1,46 @@
+# Name of your workflow
+name: Build and Deploy to Portainer (GHCR)
+
+# This workflow runs on any push to the 'main' branch
+on:
+  push:
+    branches: [ "main" ]
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  build-and-deploy:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    # Grant permissions for the built-in GITHUB_TOKEN to write packages
+    permissions:
+      contents: read
+      packages: write
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # 1. Checks out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 2. Log in to the GitHub Container Registry
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          # github.actor is the username of the person who triggered the workflow
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN is a special, automatically-generated secret
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 3. Build the Docker image and push it to GHCR
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: . # Use the current directory for the build context
+          push: true # Push the image after building
+          # Tags the image with the GHCR path. `github.repository` is 'owner/repo-name'
+          tags: ghcr.io/${{ github.repository }}:latest
+
+      # 4. Trigger the Portainer webhook to redeploy the stack
+      - name: Trigger Portainer Webhook
+        run: curl -X POST ${{ secrets.PORTAINER_WEBHOOK_URL }}
