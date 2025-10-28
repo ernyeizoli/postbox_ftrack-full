@@ -44,90 +44,6 @@ def sync_event_handler(session_pbv, session_undark, event):
             handle_note_creation(entity, session_pbv, session_undark)
         elif entity_type == 'assetversion' and action == 'add':
             handle_version_creation(entity, session_pbv, session_undark)
-def handle_version_creation(entity, session_pbv, session_undark):
-    """
-    Syncs AssetVersion creation between servers with a single attempt.
-    This version uses specific projections to fetch all required data at once.
-    """
-    version_id = entity.get('entityId')
-    if not version_id:
-        logger.warning("[VERSION SYNC] Event is missing version_id. Skipping.")
-        return
-
-    logger.info(f"[VERSION SYNC] Processing event for version_id: {version_id}")
-
-    # This specific query is still essential to get the asset and project info.
-    query_projection = (
-        'select name, comment, status, user, '
-        'asset.name, asset.project.name, asset.project.id '
-        'from AssetVersion '
-        f'where id is "{version_id}"'
-    )
-
-    source_session = None
-    target_session = None
-    source_name = None
-
-    # Determine the source server of the event
-    if session_pbv.query(f'AssetVersion where id is "{version_id}"').first():
-        source_session = session_pbv
-        target_session = session_undark
-        source_name = "PBV"
-    elif session_undark.query(f'AssetVersion where id is "{version_id}"').first():
-        source_session = session_undark
-        target_session = session_pbv
-        source_name = "UNDARK"
-    else:
-        logger.error(f"[VERSION SYNC] Version ID {version_id} not found on either server.")
-        return
-
-    # Perform the query a single time
-    source_version = source_session.query(query_projection).first()
-
-    # Check if the data is complete. If not, exit.
-    if not source_version or not source_version.get('name'):
-        logger.error(f"[VERSION SYNC] Failed to get complete version data from {source_name} for {version_id}. The data may not have been ready. Skipping.")
-        return
-
-    # Extract data (this is now safe because of the projection)
-    project_name = source_version['asset']['project']['name']
-    asset_name = source_version['asset']['name']
-    version_name = source_version['name']
-    target_name = "UNDARK" if source_name == "PBV" else "PBV"
-
-    logger.info(f"[VERSION SYNC] Source {source_name}: '{project_name}' > '{asset_name}' > '{version_name}'")
-
-    try:
-        # Find the corresponding project and asset on the target server
-        target_project = target_session.query(f'Project where name is "{project_name}"').first()
-        if not target_project:
-            logger.warning(f"[VERSION SYNC] Project '{project_name}' not found on target {target_name}. Skipping.")
-            return
-
-        target_asset = target_session.query(f'Asset where name is "{asset_name}" and project.id is "{target_project["id"]}"').first()
-        if not target_asset:
-            logger.warning(f"[VERSION SYNC] Asset '{asset_name}' not found on target {target_name}. Skipping.")
-            return
-
-        # Check if version already exists on the target
-        existing_version = target_session.query(f'AssetVersion where name is "{version_name}" and asset.id is "{target_asset["id"]}"').first()
-        if existing_version:
-            logger.info(f"[VERSION SYNC] Version '{version_name}' already exists on target {target_name}. Skipping.")
-            return
-
-        # Create the new version on the target server
-        target_session.create('AssetVersion', {
-            'name': version_name,
-            'asset': target_asset,
-            'status': source_version['status'],
-            'comment': source_version['comment'],
-            'user': source_version['user']
-        })
-        target_session.commit()
-        logger.info(f"[VERSION SYNC] SUCCESS: Synced version '{version_name}' to {target_name}.")
-
-    except Exception as e:
-        logger.error(f"[VERSION SYNC] An unexpected error occurred during sync to {target_name}: {e}", exc_info=True)
 
 def handle_task_creation(entity, session_pbv, session_undark):
     """Handles one-way sync of a new task from PBV to UNDARK."""
@@ -164,48 +80,129 @@ def handle_task_creation(entity, session_pbv, session_undark):
         logger.error(f"Error processing task creation sync: {e}")
 
 def handle_note_creation(entity, session_pbv, session_undark):
-    """Handle Note add/update events safely.
+    """Synchronize note creations between PBV and UNDARK.
 
-    This implementation is intentionally conservative: it logs the incoming
-    note and its parent, and does not perform an automatic create on the
-    target server. Automatic syncing of notes can produce duplicates and
-    may need mapping logic for different parent types; implement that when
-    requirements are clear.
+    Current behaviour:
+    * Only handles `add` events (new notes).
+    * Supports notes whose parent is a Task.
+    * Avoids duplicate creation by checking existing notes on the target task.
     """
+
     note_id = entity.get('entityId')
     if not note_id:
         logger.warning("[NOTE SYNC] Event missing note id. Skipping.")
         return
 
+    if entity.get('action') != 'add':
+        logger.info(f"[NOTE SYNC] Ignoring non-add action '{entity.get('action')}' for note {note_id}.")
+        return
+
+    def _escape(value: str) -> str:
+        return value.replace('"', '\"') if isinstance(value, str) else value
+
+    def _get(entity, key, default=None):
+        try:
+            if hasattr(entity, 'get'):
+                return entity.get(key, default)
+            return entity[key]
+        except Exception:
+            return default
+
     try:
-        # Determine source server where the note exists
-        source_session = None
-        source_name = None
-        if session_pbv.query(f'Note where id is "{note_id}"').first():
+        # Determine source server where the note exists.
+        note_on_pbv = session_pbv.query(f'Note where id is "{note_id}"').first()
+        note_on_undark = session_undark.query(f'Note where id is "{note_id}"').first()
+
+        if note_on_pbv and note_on_undark:
+            logger.info(f"[NOTE SYNC] Note {note_id} already present on both servers. Skipping.")
+            return
+        elif note_on_pbv:
             source_session = session_pbv
             source_name = 'PBV'
+            source_note = note_on_pbv
             target_session = session_undark
             target_name = 'UNDARK'
-        elif session_undark.query(f'Note where id is "{note_id}"').first():
+        elif note_on_undark:
             source_session = session_undark
             source_name = 'UNDARK'
+            source_note = note_on_undark
             target_session = session_pbv
             target_name = 'PBV'
         else:
             logger.warning(f"[NOTE SYNC] Note ID {note_id} not found on either server. Skipping.")
             return
 
-        note = source_session.query(f'Note where id is "{note_id}"').first()
-        if not note:
-            logger.warning(f"[NOTE SYNC] Failed to fetch Note {note_id} from {source_name}.")
+        # Fetch richer details about the note and its parent.
+        source_note = source_session.query(
+            'select text, content, subject, category, isTodo, user, '
+            'parent, parent.entity_type, parent.name, parent.project.name, '
+            'parent.project.id '
+            f'from Note where id is "{note_id}"'
+        ).first()
+
+        if not source_note:
+            logger.warning(f"[NOTE SYNC] Unable to load full data for note {note_id} on {source_name}. Skipping.")
             return
 
-        # Log a short summary to aid debugging. Avoid syncing automatically.
-        parent = note.get('parent') or note.get('entity')
-        parent_info = f"type={getattr(parent, 'entity_type', None)} id={getattr(parent, 'id', None)}" if parent else 'unknown'
-        logger.info(f"[NOTE SYNC] Note {note_id} from {source_name}. Subject: {note.get('subject')} Parent: {parent_info}")
+        parent = _get(source_note, 'parent')
+        if not parent:
+            logger.warning(f"[NOTE SYNC] Note {note_id} on {source_name} has no parent. Skipping.")
+            return
 
-        # TODO: implement controlled note sync mapping here if required.
+        parent_type = _get(parent, 'entity_type') or _get(parent, 'type')
+        if parent_type != 'Task':
+            logger.info(f"[NOTE SYNC] Note {note_id} parent type '{parent_type}' not supported yet. Skipping.")
+            return
+
+        task_name = _get(parent, 'name')
+        project = _get(parent, 'project') or {}
+        project_name = _get(project, 'name')
+        if not (task_name and project_name):
+            logger.warning(f"[NOTE SYNC] Note {note_id} missing parent names (task/project). Skipping.")
+            return
+
+        logger.info(f"[NOTE SYNC] Syncing note {note_id} from {source_name} task '{task_name}' / project '{project_name}' -> {target_name}.")
+
+        target_project = target_session.query(f'Project where name is "{_escape(project_name)}"').first()
+        if not target_project:
+            logger.warning(f"[NOTE SYNC] Project '{project_name}' not found on {target_name}. Skipping note sync.")
+            return
+
+        target_task = target_session.query(
+            f'Task where name is "{_escape(task_name)}" and project.id is "{target_project["id"]}"'
+        ).first()
+        if not target_task:
+            logger.warning(f"[NOTE SYNC] Task '{task_name}' not found on {target_name}. Skipping note sync.")
+            return
+
+        note_text = source_note.get('text') or ''
+        escaped_text = _escape(note_text)
+        existing_target_note = target_session.query(
+            f'Note where parent.id is "{target_task["id"]}" and text is "{escaped_text}"'
+        ).first()
+        if existing_target_note:
+            logger.info(f"[NOTE SYNC] Matching note already exists on {target_name}. Skipping.")
+            return
+
+        note_payload = {
+            'parent': target_task,
+            'text': note_text,
+            'content': _get(source_note, 'content') or note_text,
+            'isTodo': _get(source_note, 'isTodo', False),
+        }
+
+        # Copy category if available and resolvable by name.
+        category = _get(source_note, 'category')
+        cat_name = _get(category, 'name') if category else None
+        if cat_name:
+            cat_name = _escape(cat_name)
+            target_category = target_session.query(f'NoteCategory where name is "{cat_name}"').first()
+            if target_category:
+                note_payload['category'] = target_category
+
+        target_session.create('Note', note_payload)
+        target_session.commit()
+        logger.info(f"[NOTE SYNC] SUCCESS: Synced note '{note_text[:40]}' to {target_name}.")
 
     except Exception as e:
         logger.error(f"[NOTE SYNC] Error while processing note {note_id}: {e}", exc_info=True)
