@@ -1,5 +1,5 @@
 services:
-  postbox_ftrack:
+  postbox_ftrack_full:
     build: .
     pull_policy: always
     container_name: postbox_ftrack
