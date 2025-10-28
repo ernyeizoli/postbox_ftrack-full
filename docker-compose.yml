@@ -2,7 +2,7 @@ services:
   postbox_ftrack_full:
     build: .
     pull_policy: always
-    container_name: postbox_ftrack
+    container_name: postbox_ftrack_full
     restart: unless-stopped
     environment:
       FTRACK_SERVER: ${FTRACK_SERVER}
