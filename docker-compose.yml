@@ -1,6 +1,7 @@
 services:
   postbox_ftrack:
     build: .
+    pull_policy: always
     container_name: postbox_ftrack
     restart: unless-stopped
     environment:
