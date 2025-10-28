@@ -21,5 +21,9 @@ RUN --mount=type=secret,id=FTRACK_SERVER \
            echo "UNDARK_FTRACK_API_URL=$(cat /run/secrets/UNDARK_FTRACK_API_URL)" >> .env && \
            echo "UNDARK_FTRACK_API_USER=$(cat /run/secrets/UNDARK_FTRACK_API_USER)" >> .env && \
            echo "UNDARK_FTRACK_API_KEY=$(cat /run/secrets/UNDARK_FTRACK_API_KEY)" >> .env'
+ 
+# Ensure ftrack_api can write its schema cache. Set XDG cache to a writable location
+ENV XDG_CACHE_HOME=/tmp
+RUN mkdir -p /tmp/.cache && chown -R root:root /tmp/.cache
 
 CMD ["python", "run_actions.py"]

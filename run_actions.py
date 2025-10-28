@@ -16,6 +16,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
+# --- Validate required environment variables ---
+REQUIRED_ENVS = [
+    'FTRACK_SERVER',
+    'FTRACK_API_USER',
+    'FTRACK_API_KEY',
+]
+
+missing = [e for e in REQUIRED_ENVS if not os.getenv(e)]
+if missing:
+    logger.error(f"Missing required environment variables: {', '.join(missing)}. Please set them in .env or the environment.")
+    sys.exit(1)
+
 # --- Functions to run each listener ---
 def run_listener(register_function, name):
     """Initializes a session and runs a listener function."""
@@ -23,8 +35,19 @@ def run_listener(register_function, name):
     try:
         # Each process must load the .env file to get credentials
         load_dotenv()
-        # Each process gets its own session
-        session = ftrack_api.Session(auto_connect_event_hub=True)
+        # Each process gets its own session. Build session explicitly from env vars
+        api_key = os.getenv('FTRACK_API_KEY')
+        api_user = os.getenv('FTRACK_API_USER')
+        server_url = os.getenv('FTRACK_SERVER')
+        if not (api_key and api_user and server_url):
+            raise RuntimeError('Missing FTRACK_API_KEY / FTRACK_API_USER / FTRACK_SERVER for session creation')
+
+        session = ftrack_api.Session(
+            api_key=api_key,
+            api_user=api_user,
+            server_url=server_url,
+            auto_connect_event_hub=True
+        )
         register_function(session)
         logger.info(f"Listener '{name}' is waiting for events.")
         session.event_hub.wait()

@@ -162,6 +162,53 @@ def handle_task_creation(entity, session_pbv, session_undark):
 
     except Exception as e:
         logger.error(f"Error processing task creation sync: {e}")
+
+def handle_note_creation(entity, session_pbv, session_undark):
+    """Handle Note add/update events safely.
+
+    This implementation is intentionally conservative: it logs the incoming
+    note and its parent, and does not perform an automatic create on the
+    target server. Automatic syncing of notes can produce duplicates and
+    may need mapping logic for different parent types; implement that when
+    requirements are clear.
+    """
+    note_id = entity.get('entityId')
+    if not note_id:
+        logger.warning("[NOTE SYNC] Event missing note id. Skipping.")
+        return
+
+    try:
+        # Determine source server where the note exists
+        source_session = None
+        source_name = None
+        if session_pbv.query(f'Note where id is "{note_id}"').first():
+            source_session = session_pbv
+            source_name = 'PBV'
+            target_session = session_undark
+            target_name = 'UNDARK'
+        elif session_undark.query(f'Note where id is "{note_id}"').first():
+            source_session = session_undark
+            source_name = 'UNDARK'
+            target_session = session_pbv
+            target_name = 'PBV'
+        else:
+            logger.warning(f"[NOTE SYNC] Note ID {note_id} not found on either server. Skipping.")
+            return
+
+        note = source_session.query(f'Note where id is "{note_id}"').first()
+        if not note:
+            logger.warning(f"[NOTE SYNC] Failed to fetch Note {note_id} from {source_name}.")
+            return
+
+        # Log a short summary to aid debugging. Avoid syncing automatically.
+        parent = note.get('parent') or note.get('entity')
+        parent_info = f"type={getattr(parent, 'entity_type', None)} id={getattr(parent, 'id', None)}" if parent else 'unknown'
+        logger.info(f"[NOTE SYNC] Note {note_id} from {source_name}. Subject: {note.get('subject')} Parent: {parent_info}")
+
+        # TODO: implement controlled note sync mapping here if required.
+
+    except Exception as e:
+        logger.error(f"[NOTE SYNC] Error while processing note {note_id}: {e}", exc_info=True)
 def handle_version_creation(entity, session_pbv, session_undark):
     """
     Syncs AssetVersion creation.
