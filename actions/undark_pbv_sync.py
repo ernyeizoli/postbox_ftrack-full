@@ -308,6 +308,15 @@ def handle_version_creation(entity, session_pbv, session_undark):
     version_number = _get(version, "version")
     comment = _get(version, "comment")
 
+    # Retrieve the task associated with the version so we can mirror its parent relationship.
+    source_task = None
+    try:
+        if "task" not in version.keys():
+            source.populate(version, "task")
+        source_task = _get(version, "task")
+    except Exception as exc:
+        logger.debug("[VERSION SYNC] Failed to populate task for version %s: %s", version_id, _safe_str(exc))
+
     if not version_name and version_number is not None:
         version_name = f"v{version_number}"
 
@@ -318,6 +327,28 @@ def handle_version_creation(entity, session_pbv, session_undark):
         logger.warning("[VERSION SYNC] Project not found on %s: %s", tgt_name, project_name)
         return
 
+    # Attempt to find the matching task on the target side before we need it for asset or version creation.
+    target_task = None
+    task_name = None
+    if source_task:
+        task_name = _get(source_task, "name")
+        if task_name:
+            logger.debug(
+                "[VERSION SYNC] Source version %s belongs to task '%s'. Looking for match on %s.",
+                version_id,
+                task_name,
+                tgt_name,
+            )
+            target_task = target.query(
+                f'Task where name is "{_escape(task_name)}" and project.id is "{tgt_project["id"]}"'
+            ).first()
+            if not target_task:
+                logger.warning(
+                    "[VERSION SYNC] Target task not found on %s for task '%s'. Falling back to project parent.",
+                    tgt_name,
+                    task_name,
+                )
+
     tgt_asset = target.query(
         f'Asset where name is "{_escape(asset_name)}" and project.id is "{tgt_project["id"]}"'
     ).first()
@@ -325,6 +356,7 @@ def handle_version_creation(entity, session_pbv, session_undark):
         logger.warning("[VERSION SYNC] Asset not found on %s: %s", tgt_name, asset_name)
         # Attempt to mirror the asset structure on the target server.
         tgt_asset_payload = {"name": asset_name, "parent": tgt_project}
+
         asset_type_info = _get(asset, "type") or _get(asset, "asset_type")
         asset_type_name = _get(asset_type_info, "name")
         if asset_type_name:
@@ -337,6 +369,12 @@ def handle_version_creation(entity, session_pbv, session_undark):
 
         logger.info("[VERSION SYNC] Creating asset '%s' on %s", asset_name, tgt_name)
         tgt_asset = target.create("Asset", tgt_asset_payload)
+        logger.debug(
+            "[VERSION SYNC] Newly created asset '%s' attached to project '%s' on %s.",
+            asset_name,
+            project_name,
+            tgt_name,
+        )
 
     tgt_asset_id = tgt_asset["id"]
 
@@ -358,10 +396,25 @@ def handle_version_creation(entity, session_pbv, session_undark):
         payload["version"] = version_number
     if comment:
         payload["comment"] = comment
+    if target_task:
+        payload["parent"] = target_task
 
     target.create("AssetVersion", payload)
     target.commit()
-    logger.info("[VERSION SYNC] SUCCESS: Created %s on %s.", version_name, tgt_name)
+    if target_task:
+        logger.info(
+            "[VERSION SYNC] SUCCESS: Created %s on %s under task '%s'.",
+            version_name,
+            tgt_name,
+            task_name,
+        )
+    else:
+        logger.info(
+            "[VERSION SYNC] SUCCESS: Created %s on %s under project '%s'.",
+            version_name,
+            tgt_name,
+            project_name,
+        )
 
 
 # --- Event Dispatcher ---
