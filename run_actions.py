@@ -57,7 +57,7 @@ def run_listener(register_function, name):
 
 # --- Main execution block ---
 if __name__ == '__main__':
-    logger.info("Launching ftrack action server 2 ...")
+    logger.info("Launching ftrack action server 3 ...")
 
     # A list of all actions to run
     actions_to_run = [
