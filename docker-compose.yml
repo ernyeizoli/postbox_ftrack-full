@@ -12,4 +12,4 @@ services:
       UNDARK_FTRACK_API_USER: ${UNDARK_FTRACK_API_USER}
       UNDARK_FTRACK_API_KEY: ${UNDARK_FTRACK_API_KEY}
     ports:
-      - "8004:8004"
+      - "8003:8003"
