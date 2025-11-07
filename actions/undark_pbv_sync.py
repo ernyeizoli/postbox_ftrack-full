@@ -90,6 +90,31 @@ def _resolve_note_id(entity):
     return entity.get("entityId") or entity.get("id")
 
 
+def _event_hub_listener(event_hub, label, retry_delay=30):
+    """Continuously wait on an event hub, reconnecting after transient failures."""
+    while True:
+        try:
+            logger.info("[%s EVENT HUB] Waiting for events...", label)
+            event_hub.wait()
+            logger.info("[%s EVENT HUB] wait() exited; restarting listener.", label)
+        except ftrack_api.exception.EventHubConnectionError as exc:
+            logger.error(
+                "[%s EVENT HUB] Connection error: %s. Retrying in %s seconds.",
+                label,
+                _safe_str(exc),
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+        except Exception as exc:
+            logger.exception(
+                "[%s EVENT HUB] Unexpected error: %s. Retrying in %s seconds.",
+                label,
+                _safe_str(exc),
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+
+
 # --- Task Sync ---
 def handle_task_creation(entity, session_pbv, session_undark):
     task_id = entity.get("entityId")
@@ -371,7 +396,11 @@ def register(session_pbv):
         logger.info("Subscribed to topic: %s", topic)
 
     # Background listener for UNDARK
-    thread = threading.Thread(target=session_undark.event_hub.wait, daemon=True)
+    thread = threading.Thread(
+        target=_event_hub_listener,
+        args=(session_undark.event_hub, "UNDARK"),
+        daemon=True,
+    )
     thread.start()
     logger.info("UNDARK listener thread started.")
 
@@ -382,4 +411,4 @@ if __name__ == "__main__":
     pbv = get_ftrack_session(PBV_FTRACK_API_KEY, PBV_FTRACK_API_USER, PBV_FTRACK_API_URL)
     register(pbv)
     logger.info("Listening for PBV events...")
-    pbv.event_hub.wait()
+    _event_hub_listener(pbv.event_hub, "PBV")
