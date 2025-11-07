@@ -98,7 +98,7 @@ def handle_task_creation(entity, session_pbv, session_undark):
 
     try:
         logger.info("[TASK SYNC] Checking for new task %s on PBV...", task_id)
-        task = session_pbv.query(f'Task where id is "{task_id}"').first()
+        task = session_pbv.get("Task", task_id)
         if not task:
             logger.warning("[TASK SYNC] Task %s not found on PBV.", task_id)
             return
@@ -158,8 +158,8 @@ def handle_note_creation(entity, session_pbv, session_undark):
 
     try:
         # --- 2. Determine Source & Target ---
-        note_pbv = session_pbv.query(f'Note where id is "{note_id}"').first()
-        note_undark = session_undark.query(f'Note where id is "{note_id}"').first()
+        note_pbv = session_pbv.get("Note", note_id)
+        note_undark = session_undark.get("Note", note_id)
 
         # Silently skip if already synced or if the note wasn't found
         if (note_pbv and note_undark) or (not note_pbv and not note_undark):
