@@ -90,6 +90,32 @@ def _resolve_note_id(entity):
     return entity.get("entityId") or entity.get("id")
 
 
+def _describe_version_location(version):
+    """Return a human-readable hierarchy path for an asset version."""
+    try:
+        asset = _get(version, "asset")
+        version_name = _get(version, "name") or (
+            f"v{_get(version, 'version')}" if _get(version, "version") is not None else None
+        )
+
+        project_name = None
+        asset_name = None
+        task_name = None
+
+        if asset:
+            asset_name = _get(asset, "name")
+            project = _get(asset, "project")
+            project_name = _get(project, "name") if project else None
+
+        task = _get(version, "task")
+        task_name = _get(task, "name") if task else None
+
+        parts = [part for part in (project_name, task_name, asset_name, version_name) if part]
+        return " / ".join(parts) if parts else "<unknown>"
+    except Exception as exc:
+        return f"<unknown: {_safe_str(exc)}>"
+
+
 def _event_hub_listener(event_hub, label, retry_delay=30):
     """Continuously wait on an event hub, reconnecting after transient failures."""
     while True:
@@ -330,6 +356,7 @@ def handle_version_creation(entity, session_pbv, session_undark):
     # Attempt to find the matching task on the target side before we need it for asset or version creation.
     target_task = None
     task_name = None
+    task_payload = None
     if source_task:
         task_name = _get(source_task, "name")
         if task_name:
@@ -348,6 +375,59 @@ def handle_version_creation(entity, session_pbv, session_undark):
                     tgt_name,
                     task_name,
                 )
+            else:
+                logger.info(
+                    "[VERSION SYNC] Found matching task '%s' on %s (id=%s).",
+                    task_name,
+                    tgt_name,
+                    target_task["id"],
+                )
+
+    target_task_parent = None
+    if source_task and task_name and not target_task:
+        try:
+            if "parent" not in source_task.keys():
+                source.populate(source_task, "parent")
+        except Exception as exc:
+            logger.debug(
+                "[VERSION SYNC] Failed to populate task parent for %s: %s",
+                task_name,
+                _safe_str(exc),
+            )
+
+        source_task_parent = _get(source_task, "parent")
+        parent_id = _get(source_task_parent, "id")
+        parent_type = (_get(source_task_parent, "entity_type") or "").lower()
+
+        if parent_id and parent_id == _get(asset, "id"):
+            target_task_parent = tgt_asset
+        elif parent_type == "project":
+            target_task_parent = tgt_project
+        elif parent_type == "task":
+            parent_name = _get(source_task_parent, "name")
+            if parent_name:
+                target_task_parent = target.query(
+                    f'Task where name is "{_escape(parent_name)}" and project.id is "{tgt_project["id"]}"'
+                ).first()
+
+        if not target_task_parent:
+            logger.warning(
+                "[VERSION SYNC] Could not determine parent for task '%s' on %s. Using project root.",
+                task_name,
+                tgt_name,
+            )
+            target_task_parent = tgt_project
+
+        task_payload = {"name": task_name, "parent": target_task_parent}
+
+        source_task_type = _get(source_task, "type")
+        task_type_name = _get(source_task_type, "name") if source_task_type else None
+        if task_type_name:
+            task_type_target = target.query(
+                f'TaskType where name is "{_escape(task_type_name)}"'
+            ).first()
+            if task_type_target:
+                task_payload["type"] = task_type_target
 
     tgt_asset = target.query(
         f'Asset where name is "{_escape(asset_name)}" and project.id is "{tgt_project["id"]}"'
@@ -386,8 +466,36 @@ def handle_version_creation(entity, session_pbv, session_undark):
 
     exists = target.query(exists_query).first() if exists_query else None
     if exists:
-        logger.info("[VERSION SYNC] Version already exists on %s: %s", tgt_name, version_name)
+        try:
+            target.populate(exists, "task")
+            target.populate(exists, "asset")
+            asset_for_exists = _get(exists, "asset")
+            if asset_for_exists:
+                target.populate(asset_for_exists, "project")
+        except Exception as exc:
+            logger.debug(
+                "[VERSION SYNC] Failed to populate existing version %s context: %s",
+                _get(exists, "id"),
+                _safe_str(exc),
+            )
+
+        location = _describe_version_location(exists)
+        logger.info(
+            "[VERSION SYNC] Version already exists on %s at %s (id=%s)",
+            tgt_name,
+            location,
+            _get(exists, "id"),
+        )
         return
+
+    if not target_task and task_payload:
+        logger.info(
+            "[VERSION SYNC] Creating task '%s' on %s under parent '%s'.",
+            task_name,
+            tgt_name,
+            _get(task_payload.get("parent"), "name"),
+        )
+        target_task = target.create("Task", task_payload)
 
     payload = {"asset": tgt_asset}
     if version_name:
@@ -397,7 +505,12 @@ def handle_version_creation(entity, session_pbv, session_undark):
     if comment:
         payload["comment"] = comment
     if target_task:
-        payload["parent"] = target_task
+        payload["task"] = target_task
+        logger.debug(
+            "[VERSION SYNC] Associating new version with task '%s' on %s.",
+            task_name,
+            tgt_name,
+        )
 
     target.create("AssetVersion", payload)
     target.commit()
