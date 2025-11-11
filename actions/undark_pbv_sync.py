@@ -334,6 +334,23 @@ def handle_version_creation(entity, session_pbv, session_undark):
     version_number = _get(version, "version")
     comment = _get(version, "comment")
 
+    raw_metadata = _get(version, "metadata") or {}
+    metadata = dict(raw_metadata) if hasattr(raw_metadata, "items") else {}
+    metadata_product = metadata.get("product")
+    metadata_product_path = metadata.get("productpath")
+    if metadata_product:
+        logger.debug(
+            "[VERSION SYNC] Metadata product detected for version %s: %s",
+            version_id,
+            metadata_product,
+        )
+    if metadata_product_path:
+        logger.debug(
+            "[VERSION SYNC] Metadata productpath for version %s: %s",
+            version_id,
+            metadata_product_path,
+        )
+
     # Retrieve the task associated with the version so we can mirror its parent relationship.
     source_task = None
     try:
@@ -354,11 +371,21 @@ def handle_version_creation(entity, session_pbv, session_undark):
         return
 
     # Attempt to find the matching task on the target side before we need it for asset or version creation.
+    task_name = _get(source_task, "name") if source_task else None
+    if not task_name and metadata_product:
+        task_name = metadata_product
+        logger.info(
+            "[VERSION SYNC] Using metadata product '%s' as task name for version %s.",
+            metadata_product,
+            version_id,
+        )
+
     target_task = None
-    task_name = None
     task_payload = None
+    task_parent_hint = None
+    target_task_parent = None
+    task_type_target = None
     if source_task:
-        task_name = _get(source_task, "name")
         if task_name:
             logger.debug(
                 "[VERSION SYNC] Source version %s belongs to task '%s'. Looking for match on %s.",
@@ -383,7 +410,38 @@ def handle_version_creation(entity, session_pbv, session_undark):
                     target_task["id"],
                 )
 
-    target_task_parent = None
+        source_task_type = _get(source_task, "type")
+        task_type_name = _get(source_task_type, "name") if source_task_type else None
+        if task_type_name:
+            try:
+                task_type_target = target.query(
+                    f'TaskType where name is "{_escape(task_type_name)}"'
+                ).first()
+            except KeyError:
+                task_type_target = None
+                logger.debug(
+                    "[VERSION SYNC] TaskType not available on %s; skipping type mapping.",
+                    tgt_name,
+                )
+            if task_type_target:
+                logger.debug(
+                    "[VERSION SYNC] Matched task type '%s' on %s.",
+                    task_type_name,
+                    tgt_name,
+                )
+
+    if not target_task and task_name and not source_task:
+        target_task = target.query(
+            f'Task where name is "{_escape(task_name)}" and project.id is "{tgt_project["id"]}"'
+        ).first()
+        if target_task:
+            logger.info(
+                "[VERSION SYNC] Found task '%s' on %s via metadata lookup (id=%s).",
+                task_name,
+                tgt_name,
+                target_task["id"],
+            )
+
     if source_task and task_name and not target_task:
         try:
             if "parent" not in source_task.keys():
@@ -400,7 +458,7 @@ def handle_version_creation(entity, session_pbv, session_undark):
         parent_type = (_get(source_task_parent, "entity_type") or "").lower()
 
         if parent_id and parent_id == _get(asset, "id"):
-            target_task_parent = tgt_asset
+            task_parent_hint = "asset"
         elif parent_type == "project":
             target_task_parent = tgt_project
         elif parent_type == "task":
@@ -418,16 +476,8 @@ def handle_version_creation(entity, session_pbv, session_undark):
             )
             target_task_parent = tgt_project
 
-        task_payload = {"name": task_name, "parent": target_task_parent}
-
-        source_task_type = _get(source_task, "type")
-        task_type_name = _get(source_task_type, "name") if source_task_type else None
-        if task_type_name:
-            task_type_target = target.query(
-                f'TaskType where name is "{_escape(task_type_name)}"'
-            ).first()
-            if task_type_target:
-                task_payload["type"] = task_type_target
+        if target_task_parent:
+            task_payload = {"name": task_name, "parent": target_task_parent}
 
     tgt_asset = target.query(
         f'Asset where name is "{_escape(asset_name)}" and project.id is "{tgt_project["id"]}"'
@@ -455,6 +505,17 @@ def handle_version_creation(entity, session_pbv, session_undark):
             project_name,
             tgt_name,
         )
+
+    if task_parent_hint == "asset" and not target_task_parent:
+        target_task_parent = tgt_asset
+
+    if not target_task_parent and task_name:
+        target_task_parent = tgt_project
+
+    if not target_task and task_name and not task_payload:
+        task_payload = {"name": task_name, "parent": target_task_parent}
+        if task_type_target:
+            task_payload["type"] = task_type_target
 
     tgt_asset_id = tgt_asset["id"]
 
@@ -504,12 +565,22 @@ def handle_version_creation(entity, session_pbv, session_undark):
         payload["version"] = version_number
     if comment:
         payload["comment"] = comment
+    if metadata:
+        payload["metadata"] = metadata
     if target_task:
         payload["task"] = target_task
         logger.debug(
             "[VERSION SYNC] Associating new version with task '%s' on %s.",
             task_name,
             tgt_name,
+        )
+
+    if metadata_product or metadata_product_path:
+        logger.debug(
+            "[VERSION SYNC] Syncing metadata for version %s: product=%s path=%s",
+            version_id,
+            metadata_product,
+            metadata_product_path,
         )
 
     target.create("AssetVersion", payload)
