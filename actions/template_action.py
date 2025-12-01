@@ -184,36 +184,86 @@ class CreateProjectFromCopyAction:
 
     def _clone_recursive(self, source_parent, target_parent):
         """Recursively clones all children from a source parent to a target parent."""
-        source_children = sorted(source_parent['children'], key=lambda child: child.get('position', 0))
+        
+        # 1. SORTING FIX:
+        # Handle cases where 'sort' or 'position' is explicitly None to prevent crashes.
+        source_children = sorted(
+            source_parent['children'], 
+            key=lambda child: (child.get('sort') or child.get('position') or 0)
+        )
+        
         self.logger.info(f"Found {len(source_children)} children to copy under '{source_parent['name']}'.")
+        
         for source_child in source_children:
             self.logger.info(f"Copying '{source_child['name']}' ({source_child.entity_type}) to '{target_parent['name']}'.")
             
-            new_child_data = {'name': source_child['name'], 'parent': target_parent}
+            # 2. PREPARE DATA
+            new_child_data = {
+                'name': source_child['name'],
+                'parent': target_parent,
+                'description': source_child.get('description', '')
+            }
 
+            # Attempt to keep the exact same Object Type (e.g., Scene, Sequence)
+            if 'object_type_id' in source_child:
+                new_child_data['object_type_id'] = source_child['object_type_id']
+
+            # Handle Shot Frames
+            if source_child.entity_type == 'Shot':
+                new_child_data['fstart'] = source_child.get('fstart')
+                new_child_data['fend'] = source_child.get('fend')
+
+            # Handle Task Type
             if source_child.entity_type == 'Task':
-                # --- MODIFICATIONS AS PER YOUR REQUEST ---
-
-                # 1. Set the task type from the source.
                 new_child_data['type'] = source_child.get('type')
-                
-                # 2. DO NOT copy the status. By leaving this out, ftrack will
-                #    automatically assign the default "Not Started" status from the schema.
-                
-                # 3. DO NOT copy assignees. The 'assignments' attribute is not
-                #    being copied, so new tasks will be unassigned.
-                
-                # --- END OF MODIFICATIONS ---
 
-            new_child = self.session.create(source_child.entity_type, new_child_data)
+            # 3. CREATE ENTITY (With Fallback)
+            new_child = None
+            try:
+                # Try to create the exact same type as the source
+                new_child = self.session.create(source_child.entity_type, new_child_data)
+                self.session.commit()
             
-            for key, value in source_child['custom_attributes'].items():
-                new_child['custom_attributes'][key] = value
+            except ftrack_api.exception.ServerError as e:
+                # Catch Schema Validation Errors (e.g. "Object type 'Scene' cannot be created...")
+                if "ValidationError" in str(e):
+                    self.logger.warning(
+                        f"Schema Restriction: Could not create '{source_child['name']}' as '{source_child.entity_type}'. "
+                        f"Falling back to generic 'Folder' to preserve structure."
+                    )
+                    
+                    # FALLBACK: Remove specific type ID and retry as a generic Folder
+                    new_child_data.pop('object_type_id', None)
+                    new_child_data.pop('fstart', None) # Folders don't have frames
+                    new_child_data.pop('fend', None)
 
-            self.session.commit()
-            
-            if source_child.entity_type not in ['Task', 'Milestone']:
-                self._clone_recursive(source_child, new_child)
+                    try:
+                        new_child = self.session.create('Folder', new_child_data)
+                        self.session.commit()
+                        self.logger.info(f" -> Success: Created '{source_child['name']}' as a Folder.")
+                    except Exception as e2:
+                        self.logger.error(f" -> Failed even as Folder: {e2}")
+                        continue # Skip this child if even Folder fails
+                else:
+                    # If it's a real server error (e.g. Database down), raise it.
+                    raise e
+            except Exception as e:
+                self.logger.error(f"Unexpected error copying '{source_child['name']}': {e}")
+                continue
+
+            # 4. COPY CUSTOM ATTRIBUTES (Safely)
+            if new_child:
+                for key, value in source_child['custom_attributes'].items():
+                    # Only set the attribute if the new entity allows it (Schema check)
+                    if key in new_child['custom_attributes']:
+                        new_child['custom_attributes'][key] = value
+                
+                # Commit attributes
+                self.session.commit()
+
+                # 5. RECURSION
+                if source_child.entity_type not in ['Task', 'Milestone']:
+                    self._clone_recursive(source_child, new_child)
 
 def register(session):
     """Register the project copy action."""
