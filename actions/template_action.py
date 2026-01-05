@@ -143,7 +143,7 @@ class CreateProjectFromCopyAction:
         """The main logic for cloning the project."""
         source_project_id = form_data['source_project_id']
         new_project_full_name = form_data['new_project_name']
-        new_start_date = datetime.datetime.strptime(form_data['new_start_date'], '%Y-%m-%d')
+        new_start_date = datetime.datetime.strptime(form_data['new_start_date'], '%Y-%m-%d %H:%M:%S')
         self.logger.info(f"Starting clone from source project ID: {source_project_id}")
         
         source_project = self.session.get('Project', source_project_id)
@@ -225,12 +225,25 @@ class CreateProjectFromCopyAction:
                 self.session.commit()
             
             except ftrack_api.exception.ServerError as e:
+                error_str = str(e)
+                
+                # Handle DuplicateEntryError - skip this entity as it already exists
+                if "DuplicateEntryError" in error_str:
+                    self.logger.warning(
+                        f"Skipping '{source_child['name']}' - already exists in target project."
+                    )
+                    self.session.rollback()
+                    continue
+                
                 # Catch Schema Validation Errors (e.g. "Object type 'Scene' cannot be created...")
-                if "ValidationError" in str(e):
+                elif "ValidationError" in error_str:
                     self.logger.warning(
                         f"Schema Restriction: Could not create '{source_child['name']}' as '{source_child.entity_type}'. "
                         f"Falling back to generic 'Folder' to preserve structure."
                     )
+                    
+                    # Rollback to clear the failed entity from the session
+                    self.session.rollback()
                     
                     # FALLBACK: Remove specific type ID and retry as a generic Folder
                     new_child_data.pop('object_type_id', None)
@@ -243,12 +256,15 @@ class CreateProjectFromCopyAction:
                         self.logger.info(f" -> Success: Created '{source_child['name']}' as a Folder.")
                     except Exception as e2:
                         self.logger.error(f" -> Failed even as Folder: {e2}")
+                        self.session.rollback()
                         continue # Skip this child if even Folder fails
                 else:
-                    # If it's a real server error (e.g. Database down), raise it.
+                    # If it's a real server error (e.g. Database down), rollback and raise it.
+                    self.session.rollback()
                     raise e
             except Exception as e:
                 self.logger.error(f"Unexpected error copying '{source_child['name']}': {e}")
+                self.session.rollback()
                 continue
 
             # 4. COPY CUSTOM ATTRIBUTES (Safely)

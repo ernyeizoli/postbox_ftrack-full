@@ -61,9 +61,9 @@ if __name__ == '__main__':
 
     # A list of all actions to run
     actions_to_run = [
-        (register_shot_automation, "Shot Creation Automation"),
+        # (register_shot_automation, "Shot Creation Automation"),
         (register_project_copy, "Project Copy Action"),
-        (register_undark_pbv_sync, "Undark PBV Sync Listener")
+        # (register_undark_pbv_sync, "Undark PBV Sync Listener")
     ]
 
     processes = []
