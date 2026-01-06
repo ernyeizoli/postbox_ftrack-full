@@ -12,6 +12,7 @@ import functools
 import time
 from dotenv import load_dotenv
 import ftrack_api
+from actions.copy_lock import is_copy_in_progress
 
 
 # --- Logging Configuration ---
@@ -603,6 +604,11 @@ def handle_version_creation(entity, session_pbv, session_undark):
 
 # --- Event Dispatcher ---
 def sync_event_handler(session_pbv, session_undark, event):
+    # Skip processing if a project copy is in progress
+    if is_copy_in_progress():
+        logger.debug("[EVENT] Skipping: Project copy in progress")
+        return
+    
     logger.debug("[EVENT] Raw event data: %s", event)
     for entity in event["data"].get("entities", []):
         action = _resolve_action(entity)

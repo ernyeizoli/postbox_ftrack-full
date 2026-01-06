@@ -3,7 +3,8 @@ import os
 import logging
 from dotenv import load_dotenv
 import functools # Required to pass the session correctly
-import time 
+import time
+from actions.copy_lock import is_copy_in_progress 
 
 # --- Configuration ---
 # Loads credentials from your .env file
@@ -19,6 +20,11 @@ def create_tasks_for_new_shot(session, event):
     when a new 'Shot' type is created.
     This version is idempotent and uses batch commits.
     """
+    # Skip processing if a project copy is in progress
+    if is_copy_in_progress():
+        logger.debug("--- Skipping event: Project copy in progress ---")
+        return
+    
     logger.info("--- Event received, processing entities... ---")
     
     for entity in event['data'].get('entities', []):

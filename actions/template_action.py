@@ -5,9 +5,13 @@ import json
 import datetime
 import os
 from dotenv import load_dotenv
+from actions.copy_lock import set_copy_in_progress
 
 import logging
 logger = logging.getLogger(__name__)
+
+# Suppress ftrack_api internal error logging for expected validation errors
+logging.getLogger('ftrack_api.session').setLevel(logging.CRITICAL)
 
 class CreateProjectFromCopyAction:
     """Action to create a new project by copying an existing one."""
@@ -128,6 +132,10 @@ class CreateProjectFromCopyAction:
         self.logger.info(f"Created job {job['id']} to track progress.")
         
         try:
+            # Set the copy lock to prevent other actions from running
+            set_copy_in_progress(True)
+            self.logger.info("Copy lock ENABLED - other actions will be paused.")
+            
             self._clone_project(values, job)
             job['data'] = json.dumps({'description': f"Successfully copied project '{values['new_project_name']}'."})
             job['status'] = 'done'
@@ -137,6 +145,9 @@ class CreateProjectFromCopyAction:
             job['data'] = json.dumps({'description': f"ERROR: Could not copy project. Reason: {e}"})
             job['status'] = 'failed'
         finally:
+            # Always release the copy lock when done
+            set_copy_in_progress(False)
+            self.logger.info("Copy lock DISABLED - other actions resumed.")
             self.session.commit()
 
     def _clone_project(self, form_data, job):
