@@ -59,7 +59,7 @@ def create_tasks_for_new_shot(session, event):
                 logger.info(f"Found parent project: '{project['full_name']}'")
                 
                 # --- Define your task template here ---
-                task_names = ['Animation', 'Lighting', 'Compositing']
+                task_names = ['Animation (3D)', 'Compositing (2D)']
                 
 
                 status = session.query('Status where name is "Not Started"').first()
