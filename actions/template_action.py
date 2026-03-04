@@ -40,13 +40,18 @@ class CreateProjectFromCopyAction:
         self.logger.info(f'"{self.label}" action registered.')
 
     def _discover(self, event):
-        """This action is global, so it should always be available."""
+        """Only show this action on the project overview/actions page."""
+        selection = event['data'].get('selection', [])
+        # Show when no entity is selected (global overview page rocket button)
+        # or when a project ('show') is explicitly selected.
+        if selection and selection[0].get('entityType') != 'show':
+            return
         self.logger.info("Discover event received, action is available.")
         return {
             'items': [{
                 'label': self.label,
                 'actionIdentifier': self.identifier,
-                'icon': 'https://cdn.jsdelivr.net/npm/feather-icons/dist/icons/copy.svg'
+                'icon': 'https://api.iconify.design/feather/copy.svg?color=%23ffffff'
 
             }]
         }

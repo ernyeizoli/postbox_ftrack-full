@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 from actions.shot_creation_action import register as register_shot_automation
 from actions.template_action import register as register_project_copy
 from actions.undark_pbv_sync import register as register_undark_pbv_sync
+from actions.daily_internal import register as register_daily_internal
+from actions.client_review_action import register as register_client_review
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -63,7 +65,9 @@ if __name__ == '__main__':
     actions_to_run = [
         (register_shot_automation, "Shot Creation Automation"),
         (register_project_copy, "Project Copy Action"),
-        (register_undark_pbv_sync, "Undark PBV Sync Listener")
+        # (register_undark_pbv_sync, "Undark PBV Sync Listener")
+        (register_daily_internal, "Daily Internal"),
+        (register_client_review, "Client Review"),
     ]
 
     processes = []
