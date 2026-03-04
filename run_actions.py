@@ -59,7 +59,7 @@ def run_listener(register_function, name):
 
 # --- Main execution block ---
 if __name__ == '__main__':
-    logger.info("Launching ftrack action server 3 ...")
+    logger.info("Launching ftrack action server 1.0 ...")
 
     # A list of all actions to run
     actions_to_run = [
@@ -69,6 +69,7 @@ if __name__ == '__main__':
         (register_daily_internal, "Daily Internal"),
         (register_client_review, "Client Review"),
     ]
+    logger.info(f"Actions to run: {actions_to_run}")
 
     processes = []
     for register_func, name in actions_to_run:
